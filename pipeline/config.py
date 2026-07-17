@@ -34,7 +34,11 @@ class Paths:
 
     @property
     def audio_dir(self) -> Path:
-        return self.data_dir / "audio"
+        # Audio is bulky (~1.2MB/track) but re-downloadable, so it can live on
+        # ephemeral local disk (e.g. /content on Colab) instead of Drive --
+        # set MS_AUDIO_DIR to override independently of data_dir.
+        override = os.getenv("MS_AUDIO_DIR")
+        return Path(override) if override else self.data_dir / "audio"
 
     @property
     def stems_dir(self) -> Path:

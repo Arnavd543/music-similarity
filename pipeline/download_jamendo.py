@@ -17,6 +17,8 @@ from __future__ import annotations
 import argparse
 import csv
 import logging
+import os
+import shutil
 from pathlib import Path
 
 import requests
@@ -102,32 +104,142 @@ def track_audio_url(track_row: dict) -> str:
     return f"{RAW_30S_BASE}/{folder}/{track_id}.mp3"
 
 
-def download_audio(rows: list[dict], out_dir: Path, skip_existing: bool = True) -> None:
-    """Fail fast if the URL scheme is wrong: if the first 10 attempted
-    downloads all fail, raise instead of logging 5,000 warnings and leaving
-    the ingest loop nothing to process."""
+SEGMENT_SECONDS = 30  # keep only excerpt(s); full Jamendo tracks are ~20MB each
+
+
+def _probe_duration(src: Path) -> float | None:
+    import subprocess
+
+    try:
+        probe = subprocess.run(
+            ["ffprobe", "-v", "error", "-show_entries", "format=duration",
+             "-of", "csv=p=0", str(src)],
+            capture_output=True, text=True, timeout=30,
+        )
+        return float(probe.stdout.strip())
+    except Exception:
+        return None
+
+
+def _crop(src: Path, dest: Path, start: float, seconds: int = SEGMENT_SECONDS) -> bool:
+    """Crop with ffmpeg stream copy (no re-encode, ~instant)."""
+    import subprocess
+
+    try:
+        result = subprocess.run(
+            ["ffmpeg", "-y", "-v", "error", "-ss", f"{start:.2f}", "-i", str(src),
+             "-t", str(seconds), "-c", "copy", str(dest)],
+            capture_output=True, timeout=60,
+        )
+        return result.returncode == 0 and dest.exists() and dest.stat().st_size > 0
+    except Exception:
+        return False
+
+
+def _crop_center(src: Path, dest: Path, seconds: int = SEGMENT_SECONDS) -> bool:
+    duration = _probe_duration(src)
+    if duration is None:
+        return False
+    return _crop(src, dest, max(0.0, (duration - seconds) / 2), seconds)
+
+
+def _crop_two_segments(src: Path, dest_a: Path, dest_b: Path, seconds: int = SEGMENT_SECONDS) -> bool:
+    """Two *disjoint* segments (centers of the 1st and 2nd half) for
+    cross-section positive pairs. Falls back to a single center crop
+    (dest_a only) when the track is too short for disjoint segments."""
+    duration = _probe_duration(src)
+    if duration is None:
+        return False
+    if duration < 2 * seconds + 5:
+        return _crop(src, dest_a, max(0.0, (duration - seconds) / 2), seconds)
+    start_a = max(0.0, duration / 3 - seconds / 2)
+    start_b = max(start_a + seconds, 2 * duration / 3 - seconds / 2)
+    ok_a = _crop(src, dest_a, start_a, seconds)
+    ok_b = _crop(src, dest_b, start_b, seconds)
+    return ok_a and ok_b
+
+
+def _download_one(row: dict, out_dir: Path, two_segments: bool = False) -> bool:
+    """Download the (full-length, ~20MB) file to a temp path, crop 30s
+    excerpt(s) (~1.2MB each), delete the temp. `two_segments=True` writes
+    {id}__a.mp3 and {id}__b.mp3 (disjoint sections, for cross-section
+    positive pairs); otherwise a single center-crop {id}.mp3."""
+    track_id = row["TRACK_ID"].replace("track_", "")
+    tmp = out_dir / f"{track_id}.full.tmp.mp3"
+    url = track_audio_url(row)
+    try:
+        resp = requests.get(url, timeout=60)
+        resp.raise_for_status()
+        tmp.write_bytes(resp.content)
+    except requests.RequestException as exc:
+        log.warning("Failed to download %s: %s", track_id, exc)
+        tmp.unlink(missing_ok=True)
+        return False
+
+    if two_segments:
+        ok = _crop_two_segments(tmp, out_dir / f"{track_id}__a.mp3", out_dir / f"{track_id}__b.mp3")
+    else:
+        ok = _crop_center(tmp, out_dir / f"{track_id}.mp3")
+
+    if ok:
+        keep_dir = os.getenv("MS_KEEP_FULL_AUDIO_DIR")
+        if keep_dir:
+            full_dest = Path(keep_dir) / f"{track_id}.mp3"
+            full_dest.parent.mkdir(parents=True, exist_ok=True)
+            shutil.move(str(tmp), str(full_dest))
+        else:
+            tmp.unlink(missing_ok=True)
+    else:
+        log.warning("ffmpeg crop failed for %s -- keeping full-length file", track_id)
+        tmp.rename(out_dir / (f"{track_id}__a.mp3" if two_segments else f"{track_id}.mp3"))
+    return True
+
+
+def download_audio(
+    rows: list[dict],
+    out_dir: Path,
+    skip_existing: bool = True,
+    workers: int = 8,
+    two_segments: bool = False,
+) -> None:
+    """Network-bound -- doesn't need a GPU.
+
+    First 10 downloads run sequentially as a fail-fast canary (if all 10
+    fail, the URL scheme is wrong -- raise instead of logging 5,000
+    warnings); the rest run in a thread pool (`workers`).
+    `two_segments=True` (pair subset) writes {id}__a.mp3 + {id}__b.mp3."""
+    from concurrent.futures import ThreadPoolExecutor
+
     out_dir.mkdir(parents=True, exist_ok=True)
-    attempted = succeeded = 0
-    for row in tqdm(rows, desc="downloading audio"):
-        track_id = row["TRACK_ID"].replace("track_", "")
-        dest = out_dir / f"{track_id}.mp3"
-        if skip_existing and dest.exists():
-            continue
-        url = track_audio_url(row)
-        attempted += 1
-        try:
-            resp = requests.get(url, timeout=30)
-            resp.raise_for_status()
-            dest.write_bytes(resp.content)
-            succeeded += 1
-        except requests.RequestException as exc:
-            log.warning("Failed to download %s: %s", track_id, exc)
-        if attempted == 10 and succeeded == 0:
-            raise RuntimeError(
-                f"First {attempted} downloads all failed (last URL: {url}) -- "
-                "the audio URL scheme is probably wrong; verify one URL in a "
-                "browser before bulk-downloading."
+
+    def _done(row: dict) -> bool:
+        tid = row["TRACK_ID"].replace("track_", "")
+        marker = f"{tid}__a.mp3" if two_segments else f"{tid}.mp3"
+        return (out_dir / marker).exists()
+
+    todo = [row for row in rows if not (skip_existing and _done(row))]
+    if not todo:
+        log.info("All %d tracks already downloaded", len(rows))
+        return
+
+    canary, rest = todo[:10], todo[10:]
+    canary_ok = sum(
+        _download_one(row, out_dir, two_segments) for row in tqdm(canary, desc="canary downloads")
+    )
+    if canary_ok == 0:
+        raise RuntimeError(
+            f"First {len(canary)} downloads all failed (e.g. {track_audio_url(canary[-1])}) -- "
+            "the audio URL scheme is probably wrong; verify one URL in a browser "
+            "before bulk-downloading."
+        )
+
+    if rest:
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            results = list(
+                tqdm(pool.map(lambda r: _download_one(r, out_dir, two_segments), rest),
+                     total=len(rest), desc="downloading audio")
             )
+        log.info("Downloaded %d/%d (plus %d/10 canary)", sum(results), len(rest), canary_ok)
 
 
 def main() -> None:

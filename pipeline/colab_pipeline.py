@@ -260,12 +260,34 @@ def run_streaming_ingest(
     log.info("Done. Manifest: %s", manifest_path)
 
 
+def _load_for_demucs(audio_path: Path, demucs_model, device: str):
+    import torchaudio
+
+    wav, sr = torchaudio.load(str(audio_path))
+    if wav.shape[0] == 1:
+        wav = wav.repeat(2, 1)
+    if sr != demucs_model.samplerate:
+        wav = torchaudio.functional.resample(wav, sr, demucs_model.samplerate)
+    return wav.to(device)
+
+
+def _separate_to_stems(audio_path: Path, demucs_model, device: str) -> dict:
+    import torch
+    from demucs.apply import apply_model
+
+    wav = _load_for_demucs(audio_path, demucs_model, device)
+    with torch.no_grad():
+        sources = apply_model(demucs_model, wav[None], device=device, progress=False)[0]
+    return {name: src.cpu() for name, src in zip(demucs_model.sources, sources, strict=True)}
+
+
 def process_one_track_with_positive(
     audio_path: Path,
     demucs_model,
     embedder,
     scratch_dir: Path,
     device: str,
+    second_segment_path: Path | None = None,
 ) -> tuple[dict, dict]:
     """Same as process_one_track, but also runs the Phase-2 invariance
     augmentations (training/augmentations.py) on the freshly separated
@@ -277,40 +299,26 @@ def process_one_track_with_positive(
     Returns (anchor_row, positive_row), each shaped like
     {"track_id": ..., "embeddings": {stem: [floats]}}.
     """
-    import torch
-    import torchaudio
-    from demucs.apply import apply_model
-    from demucs.audio import save_audio
-
     from training.augmentations import make_melody_positive, make_rhythm_positive, make_vocal_positive  # noqa: F401
 
-    track_id = audio_path.stem
+    # Track id: '123__a' (two-segment download) normalizes to '123'.
+    track_id = audio_path.stem.removesuffix("__a")
     track_scratch = scratch_dir / track_id
     track_scratch.mkdir(parents=True, exist_ok=True)
 
-    wav, sr = torchaudio.load(str(audio_path))
-    if wav.shape[0] == 1:
-        wav = wav.repeat(2, 1)
-    if sr != demucs_model.samplerate:
-        wav = torchaudio.functional.resample(wav, sr, demucs_model.samplerate)
-    wav = wav.to(device)
-
-    with torch.no_grad():
-        sources = apply_model(demucs_model, wav[None], device=device, progress=False)[0]
-
     model_sr = demucs_model.samplerate
-    stems: dict[str, torch.Tensor] = {}
-    for name, source in zip(demucs_model.sources, sources, strict=True):
-        stems[name] = source.cpu()
+    stems = _separate_to_stems(audio_path, demucs_model, device)
 
-    # Simplification vs. the full plan: each stem gets exactly one
-    # augmentation here (rhythm-style for drums, melody-style for bass/
-    # other, segment-swap for vocals), and AspectPairDataset later pools
-    # per-aspect. That means the `timbre` aspect (which pools all four
-    # stems) ends up training on a mix of these augmentations rather than
-    # a dedicated same-track-different-section positive. Good enough to
-    # bootstrap heads on a Colab budget; revisit with a dedicated timbre
-    # augmentation pass if timbre-head eval numbers look weak.
+    # Cross-section mode: when a disjoint second segment (__b) of the same
+    # song exists, its stems are *genuinely different sections* -> much
+    # stronger positives for drums/vocals/timbre than sub-windows of one 30s
+    # clip (attacks the aspect-collapse risk directly). Melody keeps the
+    # tempo-warp positive from segment A: a different section has a
+    # *different* melody, so cross-section would be the wrong invariance.
+    stems_b: dict = {}
+    if second_segment_path is not None and second_segment_path.exists():
+        stems_b = _separate_to_stems(second_segment_path, demucs_model, device)
+
     anchor_embeddings, positive_embeddings = {}, {}
     for name in STEM_NAMES:
         if name not in stems:
@@ -320,15 +328,15 @@ def process_one_track_with_positive(
             continue
         anchor_embeddings[name] = embedder.embed(raw, model_sr).tolist()
 
-        if name == "drums":
-            # different section of the same drum stem -> same groove/kit
-            # (positive), without embedding a bit-identical copy of the anchor.
+        cross_section = name in ("drums", "vocals") and name in stems_b and not _stem_is_silent(stems_b[name])
+        if cross_section:
+            augmented = stems_b[name]
+        elif name == "drums":
+            # fallback: different sub-window of the same drum stem
             augmented = make_rhythm_positive(raw, model_sr)
         elif name in ("bass", "other"):
             augmented = make_melody_positive(raw, model_sr)
         elif name == "vocals":
-            # two disjoint segments of the same vocal stem -> same singer/
-            # timbre identity; use the second segment as the positive.
             _seg_a, augmented = make_vocal_positive(raw, model_sr)
         else:
             augmented = raw
@@ -369,13 +377,16 @@ def run_streaming_pair_ingest(
     embedder = MertEmbedder(mert_model_name, device=device)
 
     done = _load_completed_ids(anchor_manifest_path) & _load_completed_ids(positive_manifest_path)
-    remaining = [p for p in audio_paths if p.stem not in done]
+    remaining = [p for p in audio_paths if p.stem.removesuffix("__a") not in done]
     log.info("%d/%d tracks remaining for pair ingest", len(remaining), len(audio_paths))
 
     for i, audio_path in enumerate(remaining):
+        # two-segment downloads: '123__a.mp3' with sibling '123__b.mp3'
+        sibling = audio_path.with_name(audio_path.name.replace("__a", "__b")) if "__a" in audio_path.name else None
         try:
             anchor_row, positive_row = process_one_track_with_positive(
-                audio_path, demucs_model, embedder, scratch_dir, device
+                audio_path, demucs_model, embedder, scratch_dir, device,
+                second_segment_path=sibling,
             )
             _append_row(anchor_manifest_path, anchor_row)
             _append_row(positive_manifest_path, positive_row)
