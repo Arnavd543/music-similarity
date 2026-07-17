@@ -1,0 +1,16 @@
+__pycache__/
+*.pyc
+.venv/
+.env
+data/audio/
+data/stems/
+data/embeddings/
+data/checkpoints/
+*.parquet
+*.pt
+*.ckpt
+.pytest_cache/
+.ruff_cache/
+*.egg-info/
+.DS_Store
+qdrant_storage/

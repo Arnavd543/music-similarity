@@ -1,0 +1,18 @@
+# Colab already ships a CUDA-matched torch/torchaudio -- do NOT reinstall
+# those here or you risk breaking the preinstalled CUDA wiring. This file
+# is everything else the pipeline needs on top of Colab's base image.
+demucs>=4.0.1
+transformers>=4.40
+qdrant-client>=1.9
+sentence-transformers>=2.7
+faster-whisper>=1.0
+faiss-cpu>=1.8
+fastapi>=0.111
+uvicorn[standard]>=0.29
+streamlit>=1.35
+pyngrok>=7.2       # tunnel for optionally previewing the FastAPI/Streamlit app from Colab
+pandas>=2.2
+pyarrow>=16.0
+scikit-learn>=1.4
+requests>=2.31
+tqdm>=4.66
