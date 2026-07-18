@@ -135,17 +135,42 @@ def _process_upload(job_id: str, audio_path: str) -> None:
         _upload_jobs[job_id].error = str(exc)
 
 
+_modal_calls: dict[str, object] = {}
+
+
+def _modal_ingest_fn():
+    import modal
+
+    lookup = getattr(modal.Function, "from_name", None) or modal.Function.lookup
+    return lookup("music-similarity-upload", "ingest_upload")
+
+
 @app.post("/upload", response_model=UploadJobStatus)
 async def upload(file: UploadFile, background_tasks: BackgroundTasks) -> UploadJobStatus:
+    import os
+
     job_id = str(uuid.uuid4())
+    contents = await file.read()
+    status = UploadJobStatus(job_id=job_id, status="queued")
+    _upload_jobs[job_id] = status
+
+    if os.getenv("USE_MODAL_UPLOAD"):
+        # serverless GPU path (deploy/modal_upload.py); ~30s of T4 per track
+        try:
+            call = _modal_ingest_fn().spawn(contents, job_id)
+            _modal_calls[job_id] = call
+            status.status = "processing"
+        except Exception as exc:  # noqa: BLE001
+            log.exception("Modal dispatch failed")
+            status.status = "failed"
+            status.error = f"modal dispatch: {exc}"
+        return status
+
+    # local CPU fallback: works without cloud credentials, but slow (~minutes)
     suffix = Path(file.filename or "upload.mp3").suffix or ".mp3"
     dest = PATHS.audio_dir / f"upload_{job_id}{suffix}"
     dest.parent.mkdir(parents=True, exist_ok=True)
-    contents = await file.read()
     dest.write_bytes(contents)
-
-    status = UploadJobStatus(job_id=job_id, status="queued")
-    _upload_jobs[job_id] = status
     background_tasks.add_task(_process_upload, job_id, str(dest))
     return status
 
@@ -155,6 +180,19 @@ def upload_status(job_id: str) -> UploadJobStatus:
     status = _upload_jobs.get(job_id)
     if status is None:
         raise HTTPException(status_code=404, detail="Unknown job_id")
+    call = _modal_calls.get(job_id)
+    if call is not None and status.status == "processing":
+        try:
+            result = call.get(timeout=0)  # raises TimeoutError while running
+            status.status = result.get("status", "done")
+            status.track_id = result.get("track_id", job_id)
+            _modal_calls.pop(job_id, None)
+        except TimeoutError:
+            pass
+        except Exception as exc:  # noqa: BLE001
+            status.status = "failed"
+            status.error = str(exc)
+            _modal_calls.pop(job_id, None)
     return status
 
 

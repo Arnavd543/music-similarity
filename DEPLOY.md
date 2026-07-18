@@ -64,11 +64,13 @@ into a Modal function:
 
 ## 5. Ops polish checklist (the resume bullets)
 
+- [x] Dockerfile (repo root) + .dockerignore
+- [x] GitHub Actions CI: `.github/workflows/ci.yml` (pyflakes + unit tests on push)
+- [x] Modal worker: `deploy/modal_upload.py` + API dispatch via `USE_MODAL_UPLOAD=1`
 - [ ] `GET /metrics` shows p50/p95 — screenshot for the README
 - [ ] Embedding cache hit-rate metric
-- [ ] Dockerfile + GitHub Actions CI (pytest + pyflakes on push)
 - [ ] Index versioning: name collections `tracks_v1`, `tracks_v2`, ... and
-      switch via env var — lets you A/B old vs. new heads without downtime
+      switch via `QDRANT_COLLECTION` env var — A/B old vs. new heads without downtime
 - [ ] Uptime check (UptimeRobot free) against /health
 
 ## Secrets hygiene

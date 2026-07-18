@@ -35,14 +35,27 @@ def stable_point_id(track_id: str) -> int:
     return int.from_bytes(hashlib.md5(str(track_id).encode()).digest()[:8], "big") >> 1
 
 
+_LOCAL_CLIENT: QdrantClient | None = None
+_LOCAL_CLIENT_PATH: str | None = None
+
+
 def get_client() -> QdrantClient:
     """Local (embedded) mode is what Colab notebooks should use --
     QdrantClient(path=...) needs no server process, just a directory,
     which you point at mounted Drive so the index survives a runtime
-    recycle. Cloud/server modes are for the deployed app."""
+    recycle. Cloud/server modes are for the deployed app.
+
+    Embedded mode holds an exclusive file lock, so only ONE client may
+    exist per storage folder -- cache it as a module singleton so every
+    cell/module that calls get_client() shares the same instance instead
+    of hitting 'Storage folder ... already accessed'."""
+    global _LOCAL_CLIENT, _LOCAL_CLIENT_PATH
     if QDRANT.local_path:
-        log.info("Using local Qdrant at %s (no server)", QDRANT.local_path)
-        return QdrantClient(path=QDRANT.local_path)
+        if _LOCAL_CLIENT is None or _LOCAL_CLIENT_PATH != QDRANT.local_path:
+            log.info("Using local Qdrant at %s (no server)", QDRANT.local_path)
+            _LOCAL_CLIENT = QdrantClient(path=QDRANT.local_path)
+            _LOCAL_CLIENT_PATH = QDRANT.local_path
+        return _LOCAL_CLIENT
     if QDRANT.url:
         return QdrantClient(url=QDRANT.url, api_key=QDRANT.api_key)
     return QdrantClient(host=QDRANT.host, port=QDRANT.port)

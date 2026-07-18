@@ -1,0 +1,23 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install lightweight deps
+        run: pip install pytest pyflakes pandas numpy pyarrow scikit-learn requests tqdm
+      - name: Lint (undefined names are how compute gets burned)
+        run: |
+          python -m pyflakes pipeline/ training/ eval/ api/ web/ | grep -v "imported but unused" | tee /tmp/pyflakes.out
+          test ! -s /tmp/pyflakes.out
+      - name: Unit tests (pure-logic, no GPU/model downloads)
+        run: pytest tests/test_colab_pipeline.py tests/test_eval.py tests/test_triplet_engine.py -q
