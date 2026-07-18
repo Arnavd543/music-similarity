@@ -84,13 +84,12 @@ if search_clicked and seed_track_id:
                 st.write(f"**{item['track_id']}**")
                 st.write(f"score: {item['score']:.3f}")
             with cols[1]:
-                # CC-licensed MTG-Jamendo audio can be embedded directly;
-                # swap in the real CDN URL convention used by pipeline/download_jamendo.py
-                audio_url = (
-                    f"https://cdn.freesound.org/mtg-jamendo/raw_30s/audio/"
-                    f"{int(item['track_id']) % 100:02d}/{item['track_id']}.mp3"
-                )
-                st.audio(audio_url)
+                # CC-licensed MTG-Jamendo audio streams straight off the CDN;
+                # `path` comes through the Qdrant payload (upsert passthrough).
+                if item.get("path"):
+                    st.audio(f"https://cdn.freesound.org/mtg-jamendo/raw_30s/audio/{item['path']}")
+                else:
+                    st.caption("no audio path indexed")
             with cols[2]:
                 st.bar_chart(item["per_aspect_score"])
 

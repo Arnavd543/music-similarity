@@ -165,7 +165,13 @@ def _download_one(row: dict, out_dir: Path, two_segments: bool = False) -> bool:
     {id}__a.mp3 and {id}__b.mp3 (disjoint sections, for cross-section
     positive pairs); otherwise a single center-crop {id}.mp3."""
     track_id = row["TRACK_ID"].replace("track_", "")
-    tmp = out_dir / f"{track_id}.full.tmp.mp3"
+    # Temp full-length file goes to LOCAL disk, never out_dir: when out_dir is
+    # on a Drive mount, FUSE deletions move files to Drive's *trash*, which
+    # still counts against quota -- ~22MB x thousands of tracks silently
+    # filled the account and blocked all further Drive writes.
+    import tempfile
+
+    tmp = Path(tempfile.gettempdir()) / f"{track_id}.full.tmp.mp3"
     url = track_audio_url(row)
     try:
         resp = requests.get(url, timeout=60)

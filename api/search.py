@@ -45,26 +45,44 @@ def weighted_fusion_search(
     prefetch_k = max(top_k * 5, 100)
 
     candidate_scores: dict[str, dict[str, float]] = {}
+    candidate_paths: dict[str, str] = {}
     for aspect in ASPECTS:
         w = weights.get(aspect, 0.0)
         if w <= 0 or aspect not in seed_vectors:
             continue
-        hits = client.search(
-            collection_name=QDRANT.collection,
-            query_vector=qmodels.NamedVector(name=aspect, vector=seed_vectors[aspect]),
-            limit=prefetch_k,
-            with_payload=True,
-        )
+        if hasattr(client, "query_points"):
+            # qdrant-client >= 1.10 API (`search` was removed in newer releases)
+            hits = client.query_points(
+                collection_name=QDRANT.collection,
+                query=seed_vectors[aspect],
+                using=aspect,
+                limit=prefetch_k,
+                with_payload=True,
+            ).points
+        else:
+            hits = client.search(
+                collection_name=QDRANT.collection,
+                query_vector=qmodels.NamedVector(name=aspect, vector=seed_vectors[aspect]),
+                limit=prefetch_k,
+                with_payload=True,
+            )
         for hit in hits:
             track_id = hit.payload["track_id"]
             candidate_scores.setdefault(track_id, {})[aspect] = hit.score
+            if hit.payload.get("path"):
+                candidate_paths[track_id] = hit.payload["path"]
 
     fused = []
     for track_id, per_aspect in candidate_scores.items():
         if exclude_id is not None and track_id == exclude_id:
             continue
         total = sum(weights.get(a, 0.0) * s for a, s in per_aspect.items())
-        fused.append({"track_id": track_id, "score": total, "per_aspect_score": per_aspect})
+        fused.append({
+            "track_id": track_id,
+            "score": total,
+            "per_aspect_score": per_aspect,
+            "path": candidate_paths.get(track_id),
+        })
 
     fused.sort(key=lambda r: -r["score"])
     latency_ms = (time.perf_counter() - start) * 1000

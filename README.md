@@ -10,6 +10,50 @@ personalization. Shares its pipeline with a benchmark/dataset paper
 See `music-similarity-mle-plan.md` in this repo's parent folder for the
 full 16-week phase plan, budget, and risk analysis this scaffold implements.
 
+## Results (v1 — July 2026 Colab run)
+
+**Pipeline scale:** 4,870 MTG-Jamendo tracks (30s excerpts) through Demucs
+htdemucs + frozen MERT-v1-95M at 4.5s/track on a T4; 1,469 pair-tracks with
+cross-section positives at 7.45s/track; four aspect heads trained
+contrastively (InfoNCE, in-batch negatives). End-to-end weighted 5-axis
+query latency: **28ms** against embedded Qdrant.
+
+**Tag-proxy retrieval (precision@10, shared-tag relevance, 300 queries;
+chance floor 0.186):**
+
+| variant | all | genre | instrument | mood |
+|---|---|---|---|---|
+| raw_drums | 0.341 | 0.266 | 0.509 | 0.286 |
+| raw_bass | 0.309 | 0.250 | 0.465 | 0.260 |
+| raw_other | 0.351 | 0.309 | 0.518 | 0.312 |
+| raw_vocals | 0.288 | 0.239 | 0.502 | 0.281 |
+| raw_pooled | 0.375 | 0.326 | 0.526 | 0.317 |
+| head_rhythm | 0.324 | 0.281 | 0.504 | 0.292 |
+| head_melody | 0.349 | 0.275 | 0.510 | 0.292 |
+| head_timbre | 0.368 | 0.309 | 0.504 | 0.321 |
+| head_vocal | **0.329** | 0.250 | 0.479 | **0.338** |
+
+Notes: tag matching is a *global*-similarity proxy, so `raw_pooled` leading
+overall is expected — heads trade a little global-tag precision for axis
+control. `head_vocal` beats `raw_vocals` outright and posts the best mood
+score in the table. `p@10_instr` is ~0.5 for everything (instrument tags
+are too common to discriminate).
+
+**Disentanglement (inter-aspect similarity correlation over 1,000 random
+pairs — the collapse check; >0.9 would mean the aspects merged):**
+
+| | rhythm | melody | timbre | vocal |
+|---|---|---|---|---|
+| rhythm | 1.00 | 0.13 | 0.31 | 0.08 |
+| melody | 0.13 | 1.00 | 0.66 | 0.18 |
+| timbre | 0.31 | 0.66 | 1.00 | 0.32 |
+| vocal | 0.08 | 0.18 | 0.32 | 1.00 |
+
+The aspects are well separated; melody–timbre (0.66) is the closest pair,
+consistent with timbre pooling all stems including the melody carriers —
+reducing it (e.g. excluding pitched stems from the timbre pool) is an open
+ablation.
+
 ## Repo layout
 
 ```

@@ -92,16 +92,25 @@ def upsert_tracks(client: QdrantClient, df: pd.DataFrame, batch_size: int = 256)
         for i, row in chunk.iterrows():
             vectors = {}
             for aspect in ASPECTS:
-                if aspect in row and row[aspect] is not None:
-                    vec = np.asarray(row[aspect], dtype=np.float32)
-                    vectors[aspect] = vec.tolist()
+                if aspect not in row:
+                    continue
+                v = row[aspect]
+                if v is None or (isinstance(v, float) and np.isnan(v)):
+                    continue  # e.g. instrumental track with no lyric vector
+                vectors[aspect] = np.asarray(v, dtype=np.float32).tolist()
             if not vectors:
                 continue
+            payload = {"track_id": str(row["track_id"])}
+            # Optional passthrough columns (e.g. "path" -> playable CDN URL in
+            # the web app; "language" from the lyrics manifest).
+            for extra in ("path", "language"):
+                if extra in row and row[extra] is not None and not (isinstance(row[extra], float) and np.isnan(row[extra])):
+                    payload[extra] = str(row[extra])
             points.append(
                 qmodels.PointStruct(
                     id=stable_point_id(row["track_id"]),
                     vector=vectors,
-                    payload={"track_id": str(row["track_id"])},
+                    payload=payload,
                 )
             )
         if points:

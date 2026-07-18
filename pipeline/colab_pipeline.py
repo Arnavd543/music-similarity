@@ -246,16 +246,16 @@ def run_streaming_ingest(
     already_done = _load_completed_ids(manifest_path)
     log.info("%d/%d tracks already in manifest, skipping those", len(already_done), len(audio_paths))
 
+    from tqdm import tqdm
+
     remaining = [p for p in audio_paths if p.stem not in already_done]
-    for i, audio_path in enumerate(remaining):
+    for audio_path in tqdm(remaining, desc="ingest", unit="track"):
         try:
             row = process_one_track(audio_path, demucs_model, embedder, scratch_dir, device)
             _append_row(manifest_path, row)
         except Exception:
             log.exception("Failed on %s -- skipping, will retry on next run", audio_path)
             continue
-        if (i + 1) % 25 == 0:
-            log.info("Processed %d/%d remaining tracks", i + 1, len(remaining))
 
     log.info("Done. Manifest: %s", manifest_path)
 
@@ -376,11 +376,13 @@ def run_streaming_pair_ingest(
     demucs_model.eval()
     embedder = MertEmbedder(mert_model_name, device=device)
 
+    from tqdm import tqdm
+
     done = _load_completed_ids(anchor_manifest_path) & _load_completed_ids(positive_manifest_path)
     remaining = [p for p in audio_paths if p.stem.removesuffix("__a") not in done]
     log.info("%d/%d tracks remaining for pair ingest", len(remaining), len(audio_paths))
 
-    for i, audio_path in enumerate(remaining):
+    for i, audio_path in enumerate(tqdm(remaining, desc="pair ingest", unit="track")):
         # two-segment downloads: '123__a.mp3' with sibling '123__b.mp3'
         sibling = audio_path.with_name(audio_path.name.replace("__a", "__b")) if "__a" in audio_path.name else None
         try:
@@ -397,6 +399,105 @@ def run_streaming_pair_ingest(
             log.info("Pair-ingested %d/%d", i + 1, len(remaining))
 
 
+def run_streaming_lyrics(
+    audio_paths: list[Path],
+    lyrics_manifest_path: Path,
+    demucs_model_name: str = MODEL.demucs_model,
+    whisper_model_name: str = MODEL.whisper_model,
+    device: str | None = None,
+) -> None:
+    """Streaming lyrics pass: separate the vocal stem, skip instrumentals
+    (RMS gate), transcribe the rest with faster-whisper. Same resumable
+    JSONL-manifest pattern as run_streaming_ingest.
+
+    Jamendo metadata has no artist/title text, so LRCLib lookup isn't
+    possible here -- Whisper on the isolated vocal stem is the primary
+    source, per the plan.
+
+    Appends rows: {track_id, lyrics_text (or null), language, source}.
+    """
+    import numpy as np
+    import torch
+    import torchaudio
+    from demucs.pretrained import get_model
+    from faster_whisper import WhisperModel
+    from tqdm import tqdm
+
+    device = device or ("cuda" if torch.cuda.is_available() else "cpu")
+    demucs_model = get_model(demucs_model_name)
+    demucs_model.to(device)
+    demucs_model.eval()
+    try:
+        whisper = WhisperModel(whisper_model_name, device="cuda" if device == "cuda" else "cpu",
+                               compute_type="float16" if device == "cuda" else "auto")
+    except Exception:
+        log.warning("Could not load whisper '%s' -- falling back to 'small'", whisper_model_name)
+        whisper = WhisperModel("small", device="cuda" if device == "cuda" else "cpu")
+
+    done = _load_completed_ids(lyrics_manifest_path)
+    remaining = [p for p in audio_paths if p.stem not in done]
+    log.info("%d/%d tracks remaining for lyrics", len(remaining), len(audio_paths))
+
+    for audio_path in tqdm(remaining, desc="lyrics", unit="track"):
+        try:
+            track_id = audio_path.stem
+            stems = _separate_to_stems(audio_path, demucs_model, device)
+            vocals = stems.get("vocals")
+            if vocals is None or _stem_is_silent(vocals, rms_threshold=5e-3):
+                _append_row(lyrics_manifest_path, {
+                    "track_id": track_id, "lyrics_text": None,
+                    "language": None, "source": "instrumental",
+                })
+                continue
+            # faster-whisper wants 16kHz mono float32
+            mono = vocals.mean(dim=0)
+            audio_np = torchaudio.functional.resample(
+                mono, demucs_model.samplerate, 16000
+            ).numpy().astype(np.float32)
+            segments, info = whisper.transcribe(audio_np, vad_filter=True)
+            text = " ".join(s.text.strip() for s in segments).strip()
+            _append_row(lyrics_manifest_path, {
+                "track_id": track_id,
+                "lyrics_text": text or None,
+                "language": getattr(info, "language", None),
+                "source": "whisper" if text else "no_speech_detected",
+            })
+        except Exception:
+            log.exception("Lyrics failed on %s -- will retry next run", audio_path)
+            continue
+
+
+def lyrics_manifest_to_vectors(lyrics_manifest_path: Path, out_parquet: Path) -> Path:
+    """Embed transcribed lyrics with the sentence-transformer and write
+    {track_id, lyric_embedding} parquet (tracks without lyrics are omitted;
+    the search fusion already treats a missing lyric vector as no-op)."""
+    import pandas as pd
+
+    from pipeline.lyrics import embed_lyrics
+
+    rows = []
+    with lyrics_manifest_path.open() as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                r = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if r.get("lyrics_text"):
+                rows.append({"track_id": r["track_id"], "lyrics_text": r["lyrics_text"]})
+
+    df = pd.DataFrame(rows).drop_duplicates(subset="track_id", keep="last")
+    log.info("Embedding lyrics for %d tracks with text", len(df))
+    if len(df):
+        embeddings = embed_lyrics(df["lyrics_text"].tolist())
+        df["lyric"] = [e.tolist() for e in embeddings]
+    out_parquet.parent.mkdir(parents=True, exist_ok=True)
+    df.drop(columns=["lyrics_text"]).to_parquet(out_parquet)
+    return out_parquet
+
+
 def manifest_to_parquet(manifest_path: Path, out_parquet: Path) -> Path:
     """Flattens the streaming {track_id, embeddings: {stem: [...]}} JSONL
     into the long-format (track_id, stem, embedding) parquet that
@@ -405,14 +506,26 @@ def manifest_to_parquet(manifest_path: Path, out_parquet: Path) -> Path:
     import pandas as pd
 
     rows = []
+    skipped = 0
     with manifest_path.open() as f:
         for line in f:
             line = line.strip()
             if not line:
                 continue
-            record = json.loads(line)
-            for stem, emb in record["embeddings"].items():
+            # Tolerate corrupt lines (e.g. a partial write from a crashed/
+            # over-quota session), same as _load_completed_ids: any track
+            # with a corrupt row was re-ingested on resume, so a clean
+            # duplicate of it exists later in the file.
+            try:
+                record = json.loads(line)
+                stems = record["embeddings"].items()
+            except (json.JSONDecodeError, KeyError, AttributeError):
+                skipped += 1
+                continue
+            for stem, emb in stems:
                 rows.append({"track_id": record["track_id"], "stem": stem, "embedding": emb})
+    if skipped:
+        log.warning("Skipped %d corrupt manifest line(s) in %s", skipped, manifest_path)
 
     out_parquet.parent.mkdir(parents=True, exist_ok=True)
     df = pd.DataFrame(rows)
