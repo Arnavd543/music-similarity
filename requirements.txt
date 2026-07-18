@@ -1,0 +1,5 @@
+# Streamlit Community Cloud manifest (frontend only -- web/app.py talks to the
+# API over HTTP, so none of the ML stack is needed here). The API image uses
+# the Dockerfile; Colab uses requirements-colab.txt; local dev uses pyproject.
+streamlit>=1.35
+requests>=2.31
