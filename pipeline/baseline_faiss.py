@@ -1,7 +1,6 @@
 """Phase 0 walking skeleton: whole-mix MERT embedding -> FAISS -> nearest
-neighbors. No stems, no heads. Ship this first (per the plan, "de-risks
-everything") -- it's also the comparison baseline every later ablation is
-measured against.
+neighbors. No stems, no heads. The comparison baseline every later
+ablation is measured against.
 
 Usage:
     python -m pipeline.baseline_faiss build --audio-dir data/audio --out data/embeddings/baseline.index

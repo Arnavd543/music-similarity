@@ -5,7 +5,8 @@ FROM python:3.12-slim
 WORKDIR /app
 
 RUN pip install --no-cache-dir \
-    fastapi "uvicorn[standard]" qdrant-client numpy pandas scikit-learn pydantic
+    fastapi "uvicorn[standard]" qdrant-client numpy pandas scikit-learn pydantic \
+    python-multipart
 
 COPY pipeline/ pipeline/
 COPY api/ api/

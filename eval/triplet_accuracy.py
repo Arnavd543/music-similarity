@@ -2,8 +2,7 @@
 does the model rank the positive closer to the anchor than the negative,
 under the aspect-specific embedding?
 
-This is what MLE interviewers probe first -- it's the simplest possible
-sanity check that a head learned the intended invariance.
+The simplest sanity check that a head learned the intended invariance.
 """
 
 from __future__ import annotations
@@ -29,8 +28,7 @@ def triplet_accuracy(
     """triplets: list of {anchor_track_id, positive_track_id, negative_track_id, factor, difficulty}
     embeddings: track_id -> embedding vector (already the correct aspect's projection)
 
-    Returns accuracy overall and broken out per factor and per difficulty tier,
-    matching the plan's requirement for graded-difficulty reporting.
+    Returns accuracy overall and broken out per factor and per difficulty tier.
     """
     results = {"overall": [], "by_factor": {}, "by_difficulty": {}}
     correct_flags = []

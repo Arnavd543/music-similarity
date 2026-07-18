@@ -412,7 +412,7 @@ def run_streaming_lyrics(
 
     Jamendo metadata has no artist/title text, so LRCLib lookup isn't
     possible here -- Whisper on the isolated vocal stem is the primary
-    source, per the plan.
+    source.
 
     Appends rows: {track_id, lyrics_text (or null), language, source}.
     """

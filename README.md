@@ -118,25 +118,22 @@ in `pyproject.toml` but are large downloads — install them once you're on
 a machine with the bandwidth/GPU to use them (laptop for smoke-testing on
 a handful of tracks, Cornell cluster for the full run).
 
-## Week-1 checklist mapping
+## Quickstart (local / cluster)
 
-1. **Data**: `python -m pipeline.download_jamendo --n-tracks 5000` (MTG-Jamendo
-   subset, tag-stratified). Music4All access and MoisesDB/MUSDB18-HQ downloads
-   are external steps (email/manual download) — not scriptable here.
-2. **Repo scaffold**: this repo.
-3. **Validate pipeline shape/timing** on ~100 tracks:
-   ```bash
-   python -m pipeline.demucs_stems --audio-dir data/audio --out data/stems
-   python -m pipeline.mert_embed --stems-dir data/stems
-   ```
-4. **Baseline walking skeleton** (whole-mix embedding + FAISS, no stems/heads):
-   ```bash
-   python -m pipeline.baseline_faiss build --audio-dir data/audio
-   python -m pipeline.baseline_faiss query --track-id <id> --k 10
-   ```
-5. Read MERIT (arXiv 2605.27346) end-to-end — see plan §1 for the delta
-   this project takes (stems at inference, lyrics axis, real-data invariance
-   triplets, deployment, personalization).
+Small-scale validation on ~100 tracks:
+
+```bash
+python -m pipeline.download_jamendo --n-tracks 100
+python -m pipeline.demucs_stems --audio-dir data/audio --out data/stems
+python -m pipeline.mert_embed --stems-dir data/stems
+```
+
+Whole-mix FAISS baseline (no stems, no heads):
+
+```bash
+python -m pipeline.baseline_faiss build --audio-dir data/audio
+python -m pipeline.baseline_faiss query --track-id <id> --k 10
+```
 
 ## Full pipeline (once data + compute are available)
 

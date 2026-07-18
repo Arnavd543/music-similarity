@@ -6,8 +6,6 @@ vector w over the aspect similarities via Bradley-Terry (equivalently,
 logistic regression on the *difference* of per-aspect cosine similarities),
 so P(user picks A over B) = sigmoid(w . (sim(seed,A) - sim(seed,B))).
 
-This is deliberately small (no deep learning) -- per plan, "~50 lines of
-code on top of your existing vectors."
 """
 
 from __future__ import annotations

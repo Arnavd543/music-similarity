@@ -6,7 +6,7 @@ Endpoints:
   GET  /upload/{job_id}   poll job status
   POST /feedback          record a pairwise ("which is more similar") judgment
   GET  /users/{id}/weights  personalized weights fit from that user's feedback so far
-  GET  /metrics            p50/p95 latency + cache hit rate (ops polish per plan Phase 3)
+  GET  /metrics            p50/p95 latency + request count
 
 The upload path enqueues to a background worker rather than blocking the
 request; in production this hands off to Modal/Replicate serverless GPU
@@ -198,9 +198,8 @@ def upload_status(job_id: str) -> UploadJobStatus:
 
 @app.post("/feedback")
 def feedback(fb: PairwiseFeedback) -> dict:
-    """Compute per-aspect cosine sims server-side from the stored vectors and
-    append a full PairwiseJudgment. (An earlier version only setdefault'd the
-    list and never appended -- personalization silently received zero data.)"""
+    """Compute per-aspect cosine sims server-side from the stored vectors
+    and append a full PairwiseJudgment for this user."""
     import numpy as np
 
     from api.search import fetch_seed_vectors

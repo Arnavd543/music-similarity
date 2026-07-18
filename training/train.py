@@ -1,6 +1,6 @@
 """Train one AspectHead per aspect via contrastive learning over frozen
 MERT features. Heads are tiny (~1M params each) so this is hours on one
-cluster GPU, per the plan's compute budget.
+cluster GPU.
 
 Usage:
     python -m training.train --aspect rhythm \
