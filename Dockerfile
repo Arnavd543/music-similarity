@@ -6,7 +6,7 @@ WORKDIR /app
 
 RUN pip install --no-cache-dir \
     fastapi "uvicorn[standard]" qdrant-client numpy pandas scikit-learn pydantic \
-    python-multipart
+    python-multipart modal
 
 COPY pipeline/ pipeline/
 COPY api/ api/
