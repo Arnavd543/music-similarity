@@ -30,7 +30,7 @@ image = (
     modal.Image.debian_slim(python_version="3.12")
     .apt_install("ffmpeg")
     .pip_install(
-        "torch", "torchaudio", "demucs>=4.0.1", "transformers>=4.40",
+        "torch", "torchaudio", "torchcodec", "demucs>=4.0.1", "transformers>=4.40",
         "qdrant-client>=1.9", "numpy", "pandas",
     )
     # the pipeline + training modules ride along as local code

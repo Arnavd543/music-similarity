@@ -116,7 +116,10 @@ def upsert_tracks(client: QdrantClient, df: pd.DataFrame, batch_size: int = 256)
             payload = {"track_id": str(row["track_id"])}
             # Optional passthrough columns (e.g. "path" -> playable CDN URL in
             # the web app; "language" from the lyrics manifest).
-            for extra in ("path", "language"):
+            # NB: upsert replaces the whole payload -- names stamped by
+            # pipeline/track_names.py must be re-stamped after a re-upsert
+            # unless these columns are present in the dataframe.
+            for extra in ("path", "language", "title", "artist"):
                 if extra in row and row[extra] is not None and not (isinstance(row[extra], float) and np.isnan(row[extra])):
                     payload[extra] = str(row[extra])
             points.append(

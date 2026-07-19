@@ -45,7 +45,7 @@ def weighted_fusion_search(
     prefetch_k = max(top_k * 5, 100)
 
     candidate_scores: dict[str, dict[str, float]] = {}
-    candidate_paths: dict[str, str] = {}
+    candidate_meta: dict[str, dict] = {}
     for aspect in ASPECTS:
         w = weights.get(aspect, 0.0)
         if w <= 0 or aspect not in seed_vectors:
@@ -69,19 +69,23 @@ def weighted_fusion_search(
         for hit in hits:
             track_id = hit.payload["track_id"]
             candidate_scores.setdefault(track_id, {})[aspect] = hit.score
-            if hit.payload.get("path"):
-                candidate_paths[track_id] = hit.payload["path"]
+            candidate_meta[track_id] = {
+                k: hit.payload.get(k) for k in ("path", "title", "artist")
+            }
 
     fused = []
     for track_id, per_aspect in candidate_scores.items():
         if exclude_id is not None and track_id == exclude_id:
             continue
         total = sum(weights.get(a, 0.0) * s for a, s in per_aspect.items())
+        meta = candidate_meta.get(track_id, {})
         fused.append({
             "track_id": track_id,
             "score": total,
             "per_aspect_score": per_aspect,
-            "path": candidate_paths.get(track_id),
+            "path": meta.get("path"),
+            "title": meta.get("title"),
+            "artist": meta.get("artist"),
         })
 
     fused.sort(key=lambda r: -r["score"])

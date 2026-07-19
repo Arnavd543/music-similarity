@@ -49,6 +49,7 @@ class Triplet:
     positive_recipe: str  # how the positive was constructed, for provenance
     negative_track_id: str
     source_corpus: str  # moisesdb | musdb18hq | slakh2100
+    donor_track_id: str | None = None  # rhythm triplets: source of the swapped pitched stems
 
 
 def list_multitrack_songs(corpus_dir: Path) -> list[str]:
@@ -72,6 +73,7 @@ def build_rhythm_triplet(anchor_id: str, donor_id: str, negative_id: str, diffic
         positive_recipe=recipe,
         negative_track_id=negative_id,
         source_corpus="moisesdb",
+        donor_track_id=donor_id,
     )
 
 

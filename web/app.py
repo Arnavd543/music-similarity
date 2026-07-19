@@ -23,7 +23,24 @@ st.caption(
 
 with st.sidebar:
     st.header("Seed")
-    seed_track_id = st.text_input("Seed track ID", value="")
+    name_query = st.text_input("Search by song or artist name", value="")
+    seed_track_id = ""
+    if len(name_query.strip()) >= 2:
+        try:
+            resp = requests.get(f"{API_BASE}/tracks", params={"q": name_query, "limit": 20}, timeout=10)
+            resp.raise_for_status()
+            matches = resp.json()
+        except requests.RequestException:
+            matches = []
+        if matches:
+            labels = {f"{m['artist']} — {m['title']}": m["track_id"] for m in matches}
+            chosen = st.selectbox("Matches", list(labels))
+            seed_track_id = labels[chosen]
+        else:
+            st.caption("No matches — try fewer letters, or paste a track ID below.")
+    manual_id = st.text_input("...or seed by track ID (e.g. an uploaded song)", value="")
+    if manual_id.strip():
+        seed_track_id = manual_id.strip()
     user_id = st.text_input("User ID (optional, for personalized weights)", value="")
 
     st.header("Similarity axes")
@@ -81,7 +98,11 @@ if search_clicked and seed_track_id:
         for item in data["results"]:
             cols = st.columns([1, 3, 2])
             with cols[0]:
-                st.write(f"**{item['track_id']}**")
+                if item.get("title"):
+                    st.write(f"**{item['title']}**")
+                    st.caption(f"{item.get('artist', '')} · {item['track_id']}")
+                else:
+                    st.write(f"**{item['track_id']}**")
                 st.write(f"score: {item['score']:.3f}")
             with cols[1]:
                 # CC-licensed MTG-Jamendo audio streams straight off the CDN;

@@ -32,6 +32,14 @@ class SearchResultItem(BaseModel):
     score: float
     per_aspect_score: dict[str, float]
     path: str | None = None  # Jamendo CDN path for a playable audio URL
+    title: str | None = None
+    artist: str | None = None
+
+
+class TrackMatch(BaseModel):
+    track_id: str
+    title: str
+    artist: str
 
 
 class SearchResponse(BaseModel):

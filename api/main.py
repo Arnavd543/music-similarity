@@ -30,6 +30,7 @@ from api.schemas import (
     SearchResponse,
     SearchResultItem,
     SliderWeights,
+    TrackMatch,
     UploadJobStatus,
 )
 from api.search import search_similar
@@ -41,9 +42,9 @@ log = logging.getLogger(__name__)
 
 app = FastAPI(title="Controllable Multi-Axis Music Search", version="0.1.0")
 
-# --- in-memory state (swap for Redis/Postgres before real deployment) ---
+# --- in-memory state (job statuses and metrics are fine to lose on restart;
+# feedback judgments are durable in Qdrant via api/feedback_store.py) ---
 _upload_jobs: dict[str, UploadJobStatus] = {}
-_user_feedback: dict[str, list[PairwiseJudgment]] = {}
 _latencies_ms: deque[float] = deque(maxlen=2000)
 _embedding_cache: dict[str, dict] = {}  # seed_track_id -> vectors, avoids re-hitting Qdrant
 
@@ -53,12 +54,64 @@ def health() -> dict:
     return {"status": "ok"}
 
 
+_name_index: list[dict] | None = None
+
+
+def _load_name_index() -> list[dict]:
+    """All (track_id, title, artist) from the collection's payloads, cached
+    per process. ~5k entries, so in-memory substring search is plenty."""
+    global _name_index
+    if _name_index is None:
+        from pipeline.config import QDRANT
+        from pipeline.qdrant_index import get_client
+
+        client = get_client()
+        entries, offset = [], None
+        while True:
+            points, offset = client.scroll(
+                collection_name=QDRANT.collection, limit=1000,
+                offset=offset, with_payload=True, with_vectors=False,
+            )
+            for p in points:
+                if p.payload.get("title"):
+                    entries.append({
+                        "track_id": p.payload["track_id"],
+                        "title": p.payload["title"],
+                        "artist": p.payload.get("artist", ""),
+                    })
+            if offset is None:
+                break
+        _name_index = entries
+        log.info("Name index loaded: %d named tracks", len(entries))
+    return _name_index
+
+
+@app.get("/tracks", response_model=list[TrackMatch])
+def find_tracks(q: str, limit: int = 20) -> list[TrackMatch]:
+    """Substring search over 'artist title'. Requires payloads to carry
+    names -- run `python -m pipeline.track_names` once to stamp them."""
+    needle = q.strip().lower()
+    if len(needle) < 2:
+        return []
+    matches = [
+        e for e in _load_name_index()
+        if needle in f"{e['artist']} {e['title']}".lower()
+    ]
+    return [TrackMatch(**m) for m in matches[:limit]]
+
+
 @app.post("/search", response_model=SearchResponse)
 def search(req: SearchRequest) -> SearchResponse:
     weights = req.weights.as_dict()
-    if req.user_id and req.user_id in _user_feedback:
-        weights = fit_user_weights(_user_feedback[req.user_id])
-        log.info("Using personalized weights for user %s: %s", req.user_id, weights)
+    if req.user_id:
+        from api.feedback_store import load_user_judgments
+        from pipeline.qdrant_index import get_client
+
+        judgments = load_user_judgments(get_client(), req.user_id)
+        if judgments:
+            weights = fit_user_weights(judgments)
+            log.info("Personalized weights for user %s (%d judgments): %s",
+                     req.user_id, len(judgments), weights)
 
     start = time.perf_counter()
     try:
@@ -229,15 +282,20 @@ def feedback(fb: PairwiseFeedback) -> dict:
         seed_sims_b=per_aspect_sims(b_v),
         chose_a=fb.chose_a,
     )
-    _user_feedback.setdefault(fb.user_id, []).append(judgment)
-    n = len(_user_feedback[fb.user_id])
+    from api.feedback_store import load_user_judgments, save_judgment
+
+    save_judgment(client, fb.user_id, fb.seed_track_id, judgment)
+    n = len(load_user_judgments(client, fb.user_id))
     log.info("Recorded feedback for user=%s seed=%s (%d total)", fb.user_id, fb.seed_track_id, n)
     return {"status": "recorded", "n_judgments": n}
 
 
 @app.get("/users/{user_id}/weights", response_model=SliderWeights)
 def user_weights(user_id: str) -> SliderWeights:
-    judgments = _user_feedback.get(user_id, [])
+    from api.feedback_store import load_user_judgments
+    from pipeline.qdrant_index import get_client
+
+    judgments = load_user_judgments(get_client(), user_id)
     weights = fit_user_weights(judgments)
     return SliderWeights(**weights)
 

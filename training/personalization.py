@@ -41,14 +41,15 @@ def fit_user_weights(
         n = len(ASPECTS)
         return {a: 1.0 / n for a in ASPECTS}
 
-    X = np.stack([_vectorize(j.seed_sims_a) - _vectorize(j.seed_sims_b) for j in judgments])
+    diffs = np.stack([_vectorize(j.seed_sims_a) - _vectorize(j.seed_sims_b) for j in judgments])
     y = np.array([1 if j.chose_a else 0 for j in judgments])
 
-    # If everyone always says "A" or always "B" (degenerate), logistic
-    # regression on a single class fails -- guard with uniform fallback.
-    if len(set(y.tolist())) < 2:
-        n = len(ASPECTS)
-        return {a: 1.0 / n for a in ASPECTS}
+    # Symmetrize: every judgment (diff, y) implies its mirror (-diff, 1-y).
+    # This is exact under the Bradley-Terry model (no intercept) and keeps
+    # the fit well-posed even for perfectly consistent users, who would
+    # otherwise present a single-class dataset.
+    X = np.concatenate([diffs, -diffs])
+    y = np.concatenate([y, 1 - y])
 
     clf = LogisticRegression(fit_intercept=False, C=1.0)
     clf.fit(X, y)
