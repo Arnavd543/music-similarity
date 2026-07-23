@@ -15,3 +15,5 @@ data/checkpoints/
 .DS_Store
 qdrant_storage/
 music_storage/
+CLAUDE.md
+data/

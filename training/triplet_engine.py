@@ -5,9 +5,14 @@ This is the benchmark's core artifact and doubles as the head-training
 data generator for Phase 2. Each triplet is (anchor, positive, negative)
 for one factor, built by *real* stem manipulation:
 
-  - rhythm-positive:   swap all pitched stems for a different song's pitched
-                        stems, keep the anchor's drums -> positive should
-                        still sound rhythmically similar to the anchor.
+  - rhythm-positive:   swap vocals/other for a different song's vocals/other,
+                        keep the anchor's drums+bass (rhythm section) intact
+                        -> positive should still sound rhythmically similar
+                        to the anchor. Bass stays with the drums because it's
+                        rhythmically locked to them in real mixes (kick-bass
+                        interlock, walking bass); swapping it independently
+                        clashes against the anchor's actual groove regardless
+                        of tempo match.
   - melody-positive:   re-timbre via stem substitution (same MIDI/melodic
                         line, different instrument sample) or tempo-warp,
                         keeping melodic content -> positive.
@@ -52,24 +57,29 @@ class Triplet:
     donor_track_id: str | None = None  # rhythm triplets: source of the swapped pitched stems
 
 
-def list_multitrack_songs(corpus_dir: Path) -> list[str]:
+def list_multitrack_songs(corpus_dir: Path, zip_root: str = "") -> list[str]:
     """Each subdirectory of corpus_dir is treated as one song with its own
     stem files (corpus-specific stem-folder conventions are normalized
-    upstream by a per-corpus loader; this module only needs song IDs)."""
+    upstream by a per-corpus loader; this module only needs song IDs).
+    Accepts either an extracted directory or a .zip archive."""
+    if corpus_dir.suffix.lower() == ".zip":
+        from training.triplet_render import SongSource
+
+        return SongSource(corpus_dir, zip_root=zip_root).list_songs()
     return sorted(p.name for p in corpus_dir.iterdir() if p.is_dir())
 
 
 def build_rhythm_triplet(anchor_id: str, donor_id: str, negative_id: str, difficulty: str) -> Triplet:
     recipe = (
-        f"keep anchor drums; replace pitched stems (bass/vocals/other) with "
-        f"donor={donor_id}'s pitched stems at strength={TIER_STRENGTH[difficulty]}"
+        f"keep anchor drums+bass (rhythm section); replace vocals/other with "
+        f"donor={donor_id}'s vocals/other at strength={TIER_STRENGTH[difficulty]}"
     )
     return Triplet(
         triplet_id=f"rhythm_{anchor_id}_{donor_id}_{difficulty}",
         factor="rhythm",
         difficulty=difficulty,
         anchor_track_id=anchor_id,
-        positive_track_id=f"{anchor_id}+drums__{donor_id}+pitched",
+        positive_track_id=f"{anchor_id}+drums_bass__{donor_id}+vocals_other",
         positive_recipe=recipe,
         negative_track_id=negative_id,
         source_corpus="moisesdb",
@@ -81,7 +91,7 @@ def build_melody_triplet(anchor_id: str, negative_id: str, difficulty: str) -> T
     tempo_delta = 1.0 + TIER_STRENGTH[difficulty] * random.choice([-0.3, 0.3])
     recipe = f"tempo-warp anchor's melodic stems by rate={tempo_delta:.2f}, keep melodic content"
     return Triplet(
-        triplet_id=f"melody_{anchor_id}_{difficulty}",
+        triplet_id=f"melody_{anchor_id}_{negative_id}_{difficulty}",
         factor="melody",
         difficulty=difficulty,
         anchor_track_id=anchor_id,
@@ -95,7 +105,7 @@ def build_melody_triplet(anchor_id: str, negative_id: str, difficulty: str) -> T
 def build_timbre_triplet(anchor_id: str, negative_id: str, difficulty: str) -> Triplet:
     recipe = f"same instrumentation, disjoint section, section-gap strength={TIER_STRENGTH[difficulty]}"
     return Triplet(
-        triplet_id=f"timbre_{anchor_id}_{difficulty}",
+        triplet_id=f"timbre_{anchor_id}_{negative_id}_{difficulty}",
         factor="timbre",
         difficulty=difficulty,
         anchor_track_id=anchor_id,
@@ -139,13 +149,16 @@ def main() -> None:
     import argparse
 
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--corpus-dir", type=Path, required=True, help="e.g. data/moisesdb")
+    parser.add_argument("--corpus-dir", type=Path, required=True,
+                        help="extracted corpus dir or .zip archive")
     parser.add_argument("--n-per-factor", type=int, default=2000)
     parser.add_argument("--out", type=Path, default=PATHS.data_dir / "triplets" / "pool.jsonl")
     parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument("--zip-root", default="",
+                        help="'train' for MUSDB18-HQ zip, 'moisesdb/moisesdb_v0.1' for MoisesDB zip")
     args = parser.parse_args()
 
-    song_ids = list_multitrack_songs(args.corpus_dir)
+    song_ids = list_multitrack_songs(args.corpus_dir, zip_root=args.zip_root)
     log.info("Found %d multitrack songs in %s", len(song_ids), args.corpus_dir)
 
     triplets = generate_triplet_pool(song_ids, n_per_factor=args.n_per_factor, seed=args.seed)
