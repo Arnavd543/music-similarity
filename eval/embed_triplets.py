@@ -90,8 +90,14 @@ def embed_pool(
                 ok = False
                 break
             row = process_one_track(wav_path, demucs_model, embedder, scratch, device)
+            try:
+                emb = project(row["embeddings"], t["factor"], head)
+            except ValueError as e:
+                log.warning("Skipping triplet %s: %s", t["triplet_id"], e)
+                ok = False
+                break
             key = f"{t['triplet_id']}::{role}"
-            emb_rows.append({"track_id": key, "embedding": project(row["embeddings"], t["factor"], head)})
+            emb_rows.append({"track_id": key, "embedding": emb})
             ids[role] = key
         if not ok:
             continue
